@@ -1,0 +1,6 @@
+build/
+dist/
+installer/Output/
+installer/version_info.txt
+__pycache__/
+*.spec
