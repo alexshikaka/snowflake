@@ -71,3 +71,57 @@ jobs:
           body: |
             Скачайте файл CatPet-Setup-${{ steps.ver.outputs.version }}.exe ниже и запустите его.
             Python не нужен. Права администратора не нужны.
+
+  # Проверка готового установщика на чистой Windows: ставим, запускаем, удаляем.
+  smoke-test:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: setup
+
+      - name: Тихая установка (с автозапуском)
+        run: |
+          $exe = Get-ChildItem setup -Recurse -Filter *.exe | Select-Object -First 1
+          Start-Process $exe.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS="autostart"' -Wait
+          $app = "$env:LOCALAPPDATA\Programs\CatPet"
+          Get-ChildItem $app | Format-Table Name, Length
+
+      - name: Файлы на месте
+        run: |
+          $app = "$env:LOCALAPPDATA\Programs\CatPet"
+          $startup = [Environment]::GetFolderPath('Startup')
+          $need = @("$app\CatPet.exe", "$app\autostart\CatPet.lnk", "$startup\CatPet.lnk", "$app\unins000.exe")
+          foreach ($f in $need) { if (!(Test-Path $f)) { Write-Error "нет файла: $f"; exit 1 } else { Write-Host "есть: $f" } }
+          $w = Get-ChildItem "$app\_internal" -Recurse -Directory -Filter control | Where-Object { $_.FullName -like '*winrt*media*' }
+          if (!$w) { Write-Error "нет пакета для музыки (winrt)"; exit 1 }
+          $v = (Get-Item "$app\CatPet.exe").VersionInfo
+          Write-Host "Версия: $($v.ProductVersion)  Описание: $($v.FileDescription)  Автор: $($v.CompanyName)"
+          if (!$v.ProductVersion) { Write-Error "нет данных о версии"; exit 1 }
+
+      - name: Программа запускается и работает
+        run: |
+          $app = "$env:LOCALAPPDATA\Programs\CatPet"
+          $p = Start-Process "$app\CatPet.exe" -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) { Write-Error "программа закрылась сама, код $($p.ExitCode)"; exit 1 }
+          Write-Host "работает 20 секунд, память $([int]($p.WorkingSet64/1MB)) МБ"
+          # вторая копия не должна запускаться
+          $p2 = Start-Process "$app\CatPet.exe" -PassThru
+          Start-Sleep -Seconds 8
+          if (!$p2.HasExited) { Write-Error "запустилась вторая копия"; exit 1 }
+          Write-Host "вторая копия не запустилась - правильно"
+          Stop-Process -Id $p.Id -Force
+
+      - name: Удаление не оставляет следов
+        run: |
+          $app = "$env:LOCALAPPDATA\Programs\CatPet"
+          Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait
+          Start-Sleep -Seconds 3
+          $startup = [Environment]::GetFolderPath('Startup')
+          if (Test-Path "$startup\CatPet.lnk") { Write-Error "остался ярлык автозапуска"; exit 1 }
+          if (Test-Path "$app\CatPet.exe") { Write-Error "осталась программа"; exit 1 }
+          $run = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue
+          if ($run -and $run.PSObject.Properties.Name -contains 'CatPet') { Write-Error "запись в реестре автозапуска"; exit 1 }
+          Write-Host "удалено чисто"
